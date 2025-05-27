@@ -710,13 +710,13 @@ class KnightStrategy(RoleStrategy):
     def decide_mission_member(self, team_size: int) -> list:
         """骑士组队：选择信任的玩家"""
         candidates = [self.player.index]
-        trusted_players = sorted(self.player.players, key=lambda p: self.player.suspicion_level[p])
+        trusted_players = sorted(self.player.players, key=lambda p: self.player.kind_level[p], reverse=True)
         
         for p in trusted_players:
             if len(candidates) < team_size and p not in candidates:
                 candidates.append(p)
         
-        return sorted(candidates[:team_size])
+        return candidates[:team_size]
     
     def say(self) -> str:
         """骑士发言：积极识别可疑玩家"""
@@ -727,7 +727,10 @@ class KnightStrategy(RoleStrategy):
             self.player.hearing_range
         )
         
-        suspicious = [p for p in nearby_players if self.player.suspicion_level[p] > 2]
+        suspicious = [p for p in self.player.trusted_evil]
+        else_list = sorted([p for p in self.player.players if (p not in (self.player.trusted_evil | self.player.trusted_good) and p != self.player.index)], key=lambda p: self.player.kind_level[p], reverse=False)
+        suspicious.extend(else_list)
+        suspicious = suspicious[:3]
         if suspicious:
             target = random.choice(suspicious)
             return f"根据我的观察，P{target}的行为模式值得怀疑。"
@@ -737,13 +740,49 @@ class KnightStrategy(RoleStrategy):
     def mission_vote1(self) -> bool:
         """骑士投票：基于怀疑度判断"""
         current_team = self.player.team_history[-1][1] if self.player.team_history else []
-        
-        if self.player.index in current_team:
-            suspicion_score = sum(self.player.suspicion_level[p] for p in current_team)
-            return suspicion_score < len(current_team) * 2
-        
-        suspicion_score = sum(self.player.suspicion_level[p] for p in current_team)
-        return suspicion_score <= len(current_team) * 1.0
+        public_records = read_public_lib()
+        self.player.cur_round = public_records[-1]["round"]
+        evil_count=0
+        for p in current_team:
+            if p in self.player.trusted_evil and p!=self.player.index:
+                evil_count+=1
+        if self.player.cur_round not in [4]:
+            if evil_count > 0:
+                return False  # 发现可疑玩家，投票否决
+            else:
+                consider_dict={}
+                for p in self.player.players:
+                    if p != self.player.index:
+                        consider_dict[p]=self.player.kind_level[p]
+                consider_list = sorted(consider_dict.items(), key=lambda x:x[1], reverse=False)
+                if consider_list[0][0] in current_team:
+                    return False
+                elif consider_list[1][0] in current_team:
+                    return False
+                elif consider_list[2][0] in current_team:
+                    return False
+                else:
+                    return True
+        else:
+            if evil_count > 1:
+                return False  # 发现可疑玩家，投票否决
+            else:
+                consider_dict={}
+                for p in self.player.players:
+                    if p not in self.player.trusted_evil and p != self.player.index:
+                        consider_dict[p]=self.player.kind_level[p]
+                consider_list = sorted(consider_dict.items(), key=lambda x:x[1], reverse=False)
+                num=0
+                if consider_list[0][0] in current_team:
+                    num+=1
+                elif consider_list[1][0] in current_team:
+                    num+=1
+                elif consider_list[2][0] in current_team:
+                    num+=1
+                if num>1:
+                    return False
+                else:
+                    return True
 
     def mission_vote2(self) -> bool:
         """骑士任务执行：永远成功"""
@@ -1104,7 +1143,79 @@ class Player:
             self.suspicion_level[speaker] += changes['speaker_suspicion']
 
     def pass_mission_members(self, leader: int, mission_members: list):
-        self.team_history.append((leader, mission_members))
+        self.team_history.append(mission_members)
+        self.leader_history.append(leader)
+        
+        public_records = read_public_lib()
+
+        self.cur_round = public_records[-1]["round"]
+
+        idx = len(public_records) - 1
+        if self.cur_round >= 2:
+            while True:
+                if public_records[idx]["type"] == 'mission_execution' and public_records[idx]["round"] == self.cur_round - 1:
+                    if public_records[idx]['success']:
+                        last_round_result = True
+                    else:
+                        last_round_result = False
+                    self.mission_results[self.cur_round-1]=last_round_result
+                    fail_vote=public_records[idx]['fail_votes']
+                    self.mission_vote_history[self.cur_round-1] = fail_vote
+                    break
+                if idx < 0:
+                    break
+                idx -= 1
+            
+        idx = len(public_records) - 1
+        last_round_team = []
+        if self.cur_round >= 2:
+            while True:
+                if public_records[idx]["type"] == "team_proposed" and public_records[idx]["round"] == self.cur_round - 1:
+                    last_round_team.extend(public_records[idx]["members"])
+                    last_round_leader = public_records[idx]["leader"]
+                    self.past_team[self.cur_round-1] = last_round_team
+                    self.past_leader[self.cur_round-1] = last_round_leader
+                    break
+                if idx < 0:
+                    break
+                idx -= 1
+
+        idx = len(public_records) - 1       
+        if self.cur_round >= 2:
+            self.vote_history[self.cur_round-1]={}
+            while True:
+                if public_records[idx]["type"] == "public_vote" and public_records[idx]["round"] == self.cur_round - 1:
+                    for p in self.players:
+                        self.vote_history[self.cur_round-1][p] = public_records[idx]["votes"][str(p)]
+                    break
+                if idx < 0:
+                    break
+                idx -= 1
+
+        idx = len(public_records) - 1
+        update=True
+        while True:
+            if public_records[idx]["type"] == 'team_rejected' and public_records[idx]["round"] == self.cur_round:
+                update=False
+                break
+            if idx < 0:
+                break
+            idx -= 1
+        if update:
+            round_number = self.cur_round - 1
+            players = self.players
+            index = self.index
+            team_history = self.past_team
+            mission_results = self.mission_results
+            leader_history = self.past_leader
+            fail_vote_history = self.mission_vote_history
+            vote_history = self.vote_history
+            kind_level = self.kind_level
+            wise_level = self.wise_level
+            trusted_good = self.trusted_good
+            trusted_evil = self.trusted_evil
+
+            self.kind_level, self.wise_level, self.trusted_good, self.trusted_evil=calculate_mission_performance_score(round_number, players, index,  team_history, mission_results, leader_history, fail_vote_history, vote_history, kind_level, wise_level, trusted_good, trusted_evil)
 
     # 委托给策略对象的方法
     def decide_mission_member(self, team_size: int) -> list:
