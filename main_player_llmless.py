@@ -25,8 +25,6 @@ def is_in_hearing_range(speaker_pos: tuple, listener_pos: tuple, hearing_range: 
     half_range = (hearing_range - 1) // 2
     return abs(sx - lx) <= half_range and abs(sy - ly) <= half_range
 
-
-# 待修复
 def analyze_message_content(msg: str, role: str, trusted_evil: set, trusted_good: set) -> dict:
     """分析消息内容并返回信任度变化"""
     changes = defaultdict(int)
@@ -34,23 +32,23 @@ def analyze_message_content(msg: str, role: str, trusted_evil: set, trusted_good
     mentioned_players = [int(w[1:]) for w in msg_lower.split() if w.startswith("p") and w[1:].isdigit()]
     
     # 分析指控和支持
-    if any(word in msg_lower for word in ["evil", "spy", "fail", "bad", "suspicious"]):
+    if any(word in msg_lower for word in ["邪恶", "间谍", "失败", "不好", "可疑"]):
         for p in mentioned_players:
             if role == "Merlin":
-                if p in trusted_evil and "not" not in msg_lower:
+                if p in trusted_evil and "不" not in msg_lower:
                     changes['speaker_trust'] += 2  # 准确指控邪恶
-                elif p not in trusted_evil and "not" not in msg_lower:
+                elif p not in trusted_evil and "不" not in msg_lower:
                     changes['speaker_suspicion'] += 2  # 错误指控好人
             elif role in {"Morgana", "Assassin"}:
-                if p not in trusted_evil and "not" not in msg_lower:
+                if p not in trusted_evil and "不" not in msg_lower:
                     changes['speaker_trust'] += 1  # 指控好人有利于邪恶
     
-    if any(word in msg_lower for word in ["trust", "good", "approve", "loyal", "support"]):
+    if any(word in msg_lower for word in ["信任", "好人", "赞同", "忠诚", "支持"]):
         for p in mentioned_players:
             if role == "Merlin":
-                if p in trusted_evil and "not" not in msg_lower:
+                if p in trusted_evil and "不" not in msg_lower:
                     changes['speaker_suspicion'] += 2  # 支持邪恶
-                elif p not in trusted_evil and "not" not in msg_lower:
+                elif p not in trusted_evil and "不" not in msg_lower:
                     changes['speaker_trust'] += 1  # 支持好人
     
     return changes
@@ -207,7 +205,7 @@ def calculate_mission_performance_score(round_number: int, players: list, index:
                     for player in team:
                         if player not in trusted_evil:
                             kind_level[player] -= 4
-                else:    
+                else:
                     for player in team:
                         kind_level[player] -= 6
 
@@ -462,7 +460,7 @@ class MerlinStrategy(RoleStrategy):
         # Prioritize players Merlin trusts (in player.trusted_good) or has low suspicion of among safe players
         # Sort by: 1. Is in trusted_good (True first), 2. Suspicion level (lower first)
         sorted_safe_candidates = sorted(safe_players, key=lambda p_id: (
-        not (p_id in player.trusted_good), player.suspicion_level[p_id]))
+        not (p_id in player.trusted_good), -player.kind_level[p_id]))
 
         for p_id in sorted_safe_candidates:
             if p_id not in candidates and len(candidates) < team_size:
@@ -569,6 +567,7 @@ class MerlinStrategy(RoleStrategy):
 
             valid_moves.append(direction)
         return tuple(valid_moves)
+    
 # 派西维尔策略
 class PercivalStrategy(RoleStrategy):
     def say(self, player) -> str:
@@ -606,7 +605,7 @@ class PercivalStrategy(RoleStrategy):
         # Prefer the one Percival suspects less (potential Merlin).
         if len(merlin_morgana_pair) == 2 and len(candidates) < team_size:
             # Sort candidates by suspicion level (lower is better for Percival's Merlin guess)
-            sorted_mm_pair = sorted(merlin_morgana_pair, key=lambda p_id: player.suspicion_level[p_id])
+            sorted_mm_pair = sorted(merlin_morgana_pair, key=lambda p_id: -player.kind_level[p_id])
             potential_merlin_on_team = sorted_mm_pair[0]
             if potential_merlin_on_team not in candidates:
                 candidates.append(potential_merlin_on_team)
@@ -618,7 +617,7 @@ class PercivalStrategy(RoleStrategy):
         # Sort by: 1. Is in trusted_good (True first), 2. Suspicion level (lower first)
         # Percival might not have a robust 'trusted_good' like Merlin, relies more on suspicion.
         sorted_other_players = sorted(other_players_to_consider, key=lambda p_id: (
-        not (p_id in player.trusted_good), player.suspicion_level[p_id]))
+        not (p_id in player.trusted_good), -player.kind_level[p_id]))
 
         for p_id in sorted_other_players:
             if len(candidates) < team_size:
@@ -635,7 +634,7 @@ class PercivalStrategy(RoleStrategy):
             available_players = [p for p in all_player_ids if p not in candidates]
             if not available_players: break
             # Add least suspicious from remaining
-            player_to_add = sorted(available_players, key=lambda p_add: player.suspicion_level[p_add])[0]
+            player_to_add = sorted(available_players, key=lambda p_add: -player.kind_level[p_add])[0]
             candidates.append(player_to_add)
 
         return sorted(list(set(candidates))[:team_size])
@@ -842,9 +841,9 @@ class MorganaStrategy(RoleStrategy):
     def mission_vote2(self) -> bool:
         """莫甘娜任务执行：破坏任务"""
         current_round = len(self.player.mission_results) + 1
-        if current_round == 1:
-            return False if random.random() < 0.8 else True
-        return False
+        if current_round == 1 or current_round == 2:
+            return True
+        return random.random() < 0.1
 
     def walk(self) -> tuple:
         """莫甘娜移动策略：模仿梅林行为，适度移动"""
@@ -901,8 +900,8 @@ class AssassinStrategy(RoleStrategy):
     def mission_vote2(self) -> bool:
         """刺客任务执行：破坏任务"""
         current_round = len(self.player.mission_results) + 1
-        if current_round == 1:
-            return False if random.random() < 0.8 else True
+        if current_round == 1 or current_round == 2:
+            return True
         return False
     
     def assass(self) -> int:
@@ -985,64 +984,65 @@ class AssassinStrategy(RoleStrategy):
 # 奥伯伦策略
 class OberonStrategy(RoleStrategy):
     def decide_mission_member(self, team_size: int) -> list:
-        """奥伯伦组队：随机选择，制造混乱"""
-        candidates = []
-        if random.random() < 0.6:
-            candidates.append(self.player.index)
-        
-        while len(candidates) < team_size:
-            remaining = [p for p in self.player.players if p not in candidates]
-            if remaining:
-                candidates.append(random.choice(remaining))
+        """奥伯伦组队策略：始终带自己，其余选最可信蓝方"""
+        candidates = [self.player.index]
+        others = [p for p in self.player.players if p != self.player.index]
+
+        # 优先 trusted_good 中的高 kind_level 玩家
+        trusted_candidates = sorted(
+            [p for p in self.player.trusted_good if p in others],
+            key=lambda x: self.player.kind_level[x],
+            reverse=True
+        )
+
+        # 再按 kind_level 排序，排除 trusted_evil
+        fallback_candidates = sorted(
+            [p for p in others if p not in self.player.trusted_evil and p not in trusted_candidates],
+            key=lambda x: self.player.kind_level[x],
+            reverse=True
+        )
+
+        for p in trusted_candidates + fallback_candidates:
+            if len(candidates) < team_size:
+                candidates.append(p)
             else:
                 break
-        
-        return sorted(candidates[:team_size])
-    
-    def say(self) -> str:
-        """奥伯伦发言：混乱发言，制造困扰"""
-        chaos_phrases = [
-            "我觉得情况很复杂，需要更多信息。",
-            "有人的行为很奇怪，但我说不清楚。",
-            "我们可能都被误导了。",
-            "局势不明朗，大家要小心。",
-            "我有种不好的预感。"
-        ]
-        return random.choice(chaos_phrases)
-    
+
+        return sorted(candidates)
+
     def mission_vote1(self) -> bool:
-        """奥伯伦投票：基于当前轮次和队伍情况"""
+        """奥伯伦第一轮两人任务通过，其余全部反对"""
+        current_round = len(self.player.team_history) + 1
         current_team = self.player.team_history[-1][1] if self.player.team_history else []
-        current_round = len(self.player.team_history)
         
-        if self.player.index in current_team:
+        # 第一轮且任务人数为2
+        if current_round == 1 and len(current_team) == 2:
             return True
-        
-        if current_round == 1:
-            return random.random() < 0.6
-        elif current_round != 4:
-            # 选择信任度最低的玩家
-            consider_dict = {p: self.player.kind_level[p] for p in self.player.players 
-                           if p != self.player.index}
-            if consider_dict:
-                least_trusted = min(consider_dict.items(), key=lambda x: x[1])
-                return least_trusted[0] in current_team
-            return False
-        else:  # 第4轮
-            return random.random() < 0.7
-    
+        return False  # 其他轮次一律反对
+
     def mission_vote2(self) -> bool:
-        """奥伯伦任务执行：破坏任务"""
+        """任务执行策略：第一轮有 80% 概率破坏，其余全破坏"""
         current_round = len(self.player.mission_results) + 1
         if current_round == 1:
             return False if random.random() < 0.8 else True
         return False
 
+    def say(self) -> str:
+        """奥伯伦发言：像好人但不主动接触他人"""
+        neutral_phrases = [
+            "我还在观察大家的表现。",
+            "这一轮的信息还不够，我不轻易下判断。",
+            "我们要谨慎，每个细节都不能忽视。",
+            "希望这次任务能顺利完成。",
+            "我不确定谁是坏人，但我会认真分析。"
+        ]
+        return random.choice(neutral_phrases)
+
     def walk(self) -> tuple:
-        """奥伯伦移动策略：由于听力范围大且独狼，随机移动保持神秘"""
+        """奥伯伦移动策略：更随机的走位保持神秘"""
         current_pos = self.player.player_positions.get(self.player.index)
         return random_walk(current_pos, self.player.player_positions, self.player.map, 
-                          random.randint(0, 3))  # 更随机的移动步数
+                           random.randint(0, 3))
 
 #### 主Player类
 class Player:
@@ -1058,7 +1058,6 @@ class Player:
         self.vote_history = defaultdict(list)
         self.mission_results = []
         self.assassination_target = None
-        self.suspicion_level = defaultdict(float)
         self.kind_level = defaultdict(float)
         self.wise_level = defaultdict(float)
         self.players = [1, 2, 3, 4, 5, 6, 7]
@@ -1140,7 +1139,7 @@ class Player:
         if changes['speaker_trust'] > 0:
             self.kind_level[speaker] += changes['speaker_trust']
         if changes['speaker_suspicion'] > 0:
-            self.suspicion_level[speaker] += changes['speaker_suspicion']
+            self.kind_level[speaker] -= changes['speaker_suspicion']
 
     def pass_mission_members(self, leader: int, mission_members: list):
         self.team_history.append(mission_members)
@@ -1238,4 +1237,3 @@ class Player:
         if hasattr(self.strategy, 'assass'):
             return self.strategy.assass()
         return 1  # 默认返回
-    
