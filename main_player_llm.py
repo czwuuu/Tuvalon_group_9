@@ -1109,7 +1109,8 @@ class Player:
         self.past_team = {}
         self.past_leader = {}
         self.strategy = None  # 角色策略对象
-        
+        self.leader_history = []  # 添加leader_history属性
+
     def set_player_index(self, index: int):
         '''设置玩家索引'''
         self.index = index
