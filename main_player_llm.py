@@ -5,8 +5,8 @@ from game.avalon_game_helper import (
     askLLM, read_public_lib,
     read_private_lib, write_into_private
 )
+
 import time
-from typing import Optional
 
 MAP_SIZE = 9
 
@@ -420,49 +420,52 @@ class RoleStrategy:
 
 # 梅林策略
 class MerlinStrategy(RoleStrategy):
-    def say(self, player) -> str:
-        self_pos = player.player_positions.get(player.index)
+    def say(self) -> str:
+        self_pos = self.player.player_positions.get(self.player.index)
         if not self_pos:
             return "我还没有确定位置，暂时无法发言。"
 
-        if player.round_num <= 2:  # Early game, very subtle
-            if len(player.trusted_evil) > 0:
-                evil_player = random.choice(list(player.trusted_evil))
-                evil_player_pos = player.player_positions.get(evil_player)
+        # 使用当前轮数而不是round_num
+        current_round = len(self.player.team_history) + 1
+        
+        if current_round <= 2:  # Early game, very subtle
+            if len(self.player.trusted_evil) > 0:
+                evil_player = random.choice(list(self.player.trusted_evil))
+                evil_player_pos = self.player.player_positions.get(evil_player)
                 # Only hint if evil player's position is known and they are NOT in Merlin's hearing range
-                if evil_player_pos and not player._is_in_range(evil_player_pos, self_pos, player.hearing_range):
+                if evil_player_pos and not is_in_hearing_range(evil_player_pos, self_pos, self.player.hearing_range):
                     return f"我觉得P{evil_player}今天的发言有点奇怪，大家可以多观察一下他/她。"
             return "大家要多沟通，找出队伍中的不稳定因素。"
         else:  # Mid-late game, slightly more direct but still cautious
-            if len(player.trusted_evil) > 0:
-                evil_player = random.choice(list(player.trusted_evil))
-                evil_player_pos = player.player_positions.get(evil_player)
+            if len(self.player.trusted_evil) > 0:
+                evil_player = random.choice(list(self.player.trusted_evil))
+                evil_player_pos = self.player.player_positions.get(evil_player)
                 # Even in later game, prefer to hint about players not directly listening to Merlin, if possible
-                if evil_player_pos and not player._is_in_range(evil_player_pos, self_pos, player.hearing_range):
+                if evil_player_pos and not is_in_hearing_range(evil_player_pos, self_pos, self.player.hearing_range):
                     return f"我们必须警惕P{evil_player}，他/她可能不是好人。"
                 else:  # If evil is in range, be more generic
                     return "邪恶阵营的成员正在试图混淆视听，请大家警惕！"
-            if len(player.trusted_good) > 0:  # trusted_good is populated by Merlin based on observations
-                good_player = random.choice(list(player.trusted_good))
-                good_player_pos = player.player_positions.get(good_player)
-                if good_player_pos and not player._is_in_range(good_player_pos, self_pos, player.hearing_range):
+            if len(self.player.trusted_good) > 0:  # trusted_good is populated by Merlin based on observations
+                good_player = random.choice(list(self.player.trusted_good))
+                good_player_pos = self.player.player_positions.get(good_player)
+                if good_player_pos and not is_in_hearing_range(good_player_pos, self_pos, self.player.hearing_range):
                     return f"P{good_player}一直是值得信任的，我支持他/她。"
                 else:
                     return "我们应该信任那些为团队付出的人。"
         return "我们需要一个能通过任务的队伍。请大家谨慎选择。"
 
-    def decide_mission_member(self, player, team_size: int) -> list:
+    def decide_mission_member(self, team_size: int) -> list:
         candidates = []
-        if player.index not in candidates:
-            candidates.append(player.index)
+        if self.player.index not in candidates:
+            candidates.append(self.player.index)
 
         # Get players Merlin knows are not evil
-        safe_players = [p for p in player.players if p not in player.trusted_evil]
+        safe_players = [p for p in self.player.players if p not in self.player.trusted_evil]
 
         # Prioritize players Merlin trusts (in player.trusted_good) or has low suspicion of among safe players
         # Sort by: 1. Is in trusted_good (True first), 2. Suspicion level (lower first)
         sorted_safe_candidates = sorted(safe_players, key=lambda p_id: (
-        not (p_id in player.trusted_good), -player.kind_level[p_id]))
+        not (p_id in self.player.trusted_good), -self.player.kind_level[p_id]))
 
         for p_id in sorted_safe_candidates:
             if p_id not in candidates and len(candidates) < team_size:
@@ -475,7 +478,7 @@ class MerlinStrategy(RoleStrategy):
 
         # Fallback: if still not enough (e.g. too many evil players), fill with any available player not already on team
         # This part should ideally not be reached if team_size is reasonable for # of good players
-        all_player_ids = [p_id for p_id in player.players]
+        all_player_ids = [p_id for p_id in self.player.players]
         while len(candidates) < team_size:
             available_players = [p_id for p_id in all_player_ids if p_id not in candidates]
             if not available_players: break
@@ -485,21 +488,21 @@ class MerlinStrategy(RoleStrategy):
 
         return sorted(list(set(candidates))[:team_size])
 
-    def mission_vote1(self, player) -> bool:  # Team approval
-        current_team = player.team_history[-1] if player.team_history else []
+    def mission_vote1(self) -> bool:  # Team approval
+        current_team = self.player.team_history[-1] if self.player.team_history else []
         if not current_team: return random.choice([True, False])
 
-        if any(p in player.trusted_evil for p in current_team):
+        if any(p in self.player.trusted_evil for p in current_team):
             return False  # Reject if known evil is on the team
 
         # If a seemingly good team, approve.
         # Calculate suspicion of team members not known to be good by Merlin
-        suspicion_on_team = sum(player.suspicion_level[p] for p in current_team if
-                                p not in player.trusted_good and p not in player.trusted_evil)
+        suspicion_on_team = sum(-self.player.kind_level[p] for p in current_team if
+                                p not in self.player.trusted_good and p not in self.player.trusted_evil)
 
         # Heuristic: if high suspicion and early/mid game, might reject unless vote track is late
-        # (More complex vote track logic would require more state from Player class)
-        if suspicion_on_team > (len(current_team) * 1.5) and player.round_num < 4:
+        current_round = len(self.player.team_history)
+        if suspicion_on_team > (len(current_team) * 1.5) and current_round < 4:
             # Check if it's a late proposal in the round (e.g. 4th or 5th vote)
             # This info isn't directly available in a simple way, so Merlin is generally cautious
             return False
@@ -511,20 +514,19 @@ class MerlinStrategy(RoleStrategy):
         """梅林任务执行：永远成功"""
         return True
 
-    def walk(self, player) -> tuple:
+    def walk(self) -> tuple:
         """
         Generic walking logic. Roles can override this if they have specific
         walking patterns, but typically this is common.
-        The 'player' parameter is an instance of the main Player class.
         """
-        origin_pos = player.player_positions.get(player.index)
+        origin_pos = self.player.player_positions.get(self.player.index)
         if not origin_pos:
             return tuple()  # Cannot walk if position is unknown
 
         x, y = origin_pos
         # Correctly get other players' current positions
-        others_pos = [pos for pid, pos in player.player_positions.items()
-                      if pid != player.index and pos is not None]
+        others_pos = [pos for pid, pos in self.player.player_positions.items()
+                      if pid != self.player.index and pos is not None]
 
         total_step = random.randint(0, 3)
 
@@ -572,93 +574,94 @@ class MerlinStrategy(RoleStrategy):
     
 # 派西维尔策略
 class PercivalStrategy(RoleStrategy):
-    def say(self, player) -> str:
-        self_pos = player.player_positions.get(player.index)
+    def say(self) -> str:
+        self_pos = self.player.player_positions.get(self.player.index)
         if not self_pos:
             return "我尚未确定方位。"
 
-        if 'Merlin_Morgana_candidates' in player.known_roles and \
-                len(player.known_roles['Merlin_Morgana_candidates']) == 2:
-            candidates = player.known_roles['Merlin_Morgana_candidates']
-            c1_pos = player.player_positions.get(candidates[0])
-            c2_pos = player.player_positions.get(candidates[1])
+        if 'Merlin_Morgana_candidates' in self.player.known_roles and \
+                len(self.player.known_roles['Merlin_Morgana_candidates']) == 2:
+            candidates = self.player.known_roles['Merlin_Morgana_candidates']
+            c1_pos = self.player.player_positions.get(candidates[0])
+            c2_pos = self.player.player_positions.get(candidates[1])
 
             # Try to communicate to candidates if they are in range
-            if c1_pos and player._is_in_range(c1_pos, self_pos, player.hearing_range) and \
-                    c2_pos and player._is_in_range(c2_pos, self_pos, player.hearing_range):
+            if c1_pos and is_in_hearing_range(c1_pos, self_pos, self.player.hearing_range) and \
+                    c2_pos and is_in_hearing_range(c2_pos, self_pos, self.player.hearing_range):
                 return f"P{candidates[0]}和P{candidates[1]}，你们中的一位是梅林，另一位是莫甘娜。请用你们的行动证明身份！"
-            elif c1_pos and player._is_in_range(c1_pos, self_pos, player.hearing_range):
+            elif c1_pos and is_in_hearing_range(c1_pos, self_pos, self.player.hearing_range):
                 return f"P{candidates[0]}，你的责任重大。我希望你能指引我们。"
-            elif c2_pos and player._is_in_range(c2_pos, self_pos, player.hearing_range):
+            elif c2_pos and is_in_hearing_range(c2_pos, self_pos, self.player.hearing_range):
                 return f"P{candidates[1]}，我正密切关注你。希望你是忠诚的一方。"
             else:  # If candidates are not in range, make a general statement for others
                 return f"我已见到梅林与莫甘娜的幻象，他们是P{candidates[0]}和P{candidates[1]}。大家要仔细观察他们的行为！"
         return "寻找梅林是我的责任。我会尽力保护他，并揭露莫甘娜的伪装。"
 
-    def decide_mission_member(self, player, team_size: int) -> list:
+    def decide_mission_member(self, team_size: int) -> list:
         candidates = []
-        if player.index not in candidates:
-            candidates.append(player.index)
+        if self.player.index not in candidates:
+            candidates.append(self.player.index)
 
         # Percival knows Merlin/Morgana candidates
-        merlin_morgana_pair = player.known_roles.get('Merlin_Morgana_candidates', [])
+        merlin_morgana_pair = self.player.known_roles.get('Merlin_Morgana_candidates', [])
 
         # Strategy: Try to include one of the Merlin/Morgana candidates to test them.
         # Prefer the one Percival suspects less (potential Merlin).
         if len(merlin_morgana_pair) == 2 and len(candidates) < team_size:
             # Sort candidates by suspicion level (lower is better for Percival's Merlin guess)
-            sorted_mm_pair = sorted(merlin_morgana_pair, key=lambda p_id: -player.kind_level[p_id])
+            sorted_mm_pair = sorted(merlin_morgana_pair, key=lambda p_id: -self.player.kind_level[p_id])
             potential_merlin_on_team = sorted_mm_pair[0]
             if potential_merlin_on_team not in candidates:
                 candidates.append(potential_merlin_on_team)
 
         # Fill with other trusted players (low suspicion, or in player.trusted_good if Percival populates this)
         # Exclude self and already added M/M candidate from this pool for now.
-        other_players_to_consider = [p for p in player.players if p not in candidates]
+        other_players_to_consider = [p for p in self.player.players if p not in candidates]
 
         # Sort by: 1. Is in trusted_good (True first), 2. Suspicion level (lower first)
         # Percival might not have a robust 'trusted_good' like Merlin, relies more on suspicion.
         sorted_other_players = sorted(other_players_to_consider, key=lambda p_id: (
-        not (p_id in player.trusted_good), -player.kind_level[p_id]))
+        not (p_id in self.player.trusted_good), -self.player.kind_level[p_id]))
 
         for p_id in sorted_other_players:
             if len(candidates) < team_size:
                 # Avoid putting both Merlin/Morgana candidates on the same team if Percival is leading
                 # especially if the team is small or it's early game.
+                current_round = len(self.player.team_history) + 1
                 if p_id in merlin_morgana_pair and any(mm_cand in candidates for mm_cand in merlin_morgana_pair):
-                    if team_size <= 3 or player.round_num <= 2:  # Be cautious putting both on small/early teams
+                    if team_size <= 3 or current_round <= 2:  # Be cautious putting both on small/early teams
                         continue
                 candidates.append(p_id)
 
         # Fallback fill if necessary
-        all_player_ids = [p_id for p_id in player.players]
+        all_player_ids = [p_id for p_id in self.player.players]
         while len(candidates) < team_size:
             available_players = [p for p in all_player_ids if p not in candidates]
             if not available_players: break
             # Add least suspicious from remaining
-            player_to_add = sorted(available_players, key=lambda p_add: -player.kind_level[p_add])[0]
+            player_to_add = sorted(available_players, key=lambda p_add: -self.player.kind_level[p_add])[0]
             candidates.append(player_to_add)
 
         return sorted(list(set(candidates))[:team_size])
 
-    def mission_vote1(self, player) -> bool:  # Team approval
-        current_team = player.team_history[-1] if player.team_history else []
+    def mission_vote1(self) -> bool:  # Team approval
+        current_team = self.player.team_history[-1] if self.player.team_history else []
         if not current_team: return random.choice([True, False])
 
-        merlin_morgana_pair = player.known_roles.get('Merlin_Morgana_candidates', [])
+        merlin_morgana_pair = self.player.known_roles.get('Merlin_Morgana_candidates', [])
 
         # Count how many of the M/M pair are on the proposed team
         mm_on_team_count = sum(1 for p_id in current_team if p_id in merlin_morgana_pair)
 
         # If Percival is on the team, he's generally more likely to approve if it's not terrible
-        if player.index in current_team:
+        if self.player.index in current_team:
             if mm_on_team_count == 1: return True  # Good for testing one candidate
             if mm_on_team_count == 0 and len(merlin_morgana_pair) == 2:  # Neither M/M on team, but Percival is.
                 # Approve if team seems good otherwise
                 suspicion_on_team_no_mm = sum(
-                    player.suspicion_level[p] for p in current_team if p not in merlin_morgana_pair)
+                    -self.player.kind_level[p] for p in current_team if p not in merlin_morgana_pair)
                 if suspicion_on_team_no_mm < (
-                        len(current_team) - (1 if player.index in current_team else 0)) * 0.5: return True  # Low sus
+                        len(current_team) - (1 if self.player.index in current_team else 0)) * 0.5: return True  # Low sus
 
         # If one of the M/M candidates is on the team, Percival usually approves to see their mission play.
         if mm_on_team_count == 1:
@@ -675,36 +678,34 @@ class PercivalStrategy(RoleStrategy):
         # If no M/M candidates are on the team (and Percival isn't leading/on it to test them this way)
         # Percival might reject to try and get one of them onto a future team,
         # or approve if the team looks very trustworthy otherwise.
-        if mm_on_team_count == 0 and len(merlin_morgana_pair) == 2:
-            if random.random() < 0.6:  # Higher chance to reject to try and get M/M on a team
-                return False
+        suspicion_on_team = sum(-self.player.kind_level[p] for p in current_team)
+        if suspicion_on_team < len(current_team) * 0.5:  # Very low suspicion team
+            return True
+        else:
+            return False  # Reject to try and get M/M candidates on future teams
 
-        # General good player logic: approve if low suspicion
-        team_suspicion = sum(player.suspicion_level[p] for p in current_team)
-        return team_suspicion < (len(current_team) * 0.75)  # Threshold for approval
-
-    # assassinate is inherited from RoleStrategy (returns -1 for Percival)
     def mission_vote2(self) -> bool:
         """派西维尔任务执行：永远成功"""
         return True
 
     def walk(self) -> tuple:
-        """派西维尔移动策略：尝试靠近梅林/莫甘娜候选人观察"""
+        """派西维尔移动策略：尝试靠近梅林/莫甘娜候选人"""
         current_pos = self.player.player_positions.get(self.player.index)
         if not current_pos:
             return tuple()
         
-        # 获取梅林/莫甘娜候选人位置
-        candidates = self.player.known_roles.get('Merlin_Morgana_candidates', [])
-        candidate_positions = [self.player.player_positions.get(p) for p in candidates 
-                              if p in self.player.player_positions]
-        candidate_positions = [pos for pos in candidate_positions if pos]
+        # 尝试靠近梅林/莫甘娜候选人
+        if 'Merlin_Morgana_candidates' in self.player.known_roles:
+            candidates = self.player.known_roles['Merlin_Morgana_candidates']
+            candidate_positions = [self.player.player_positions.get(p) for p in candidates 
+                                 if p in self.player.player_positions]
+            candidate_positions = [pos for pos in candidate_positions if pos]
+            
+            if candidate_positions:
+                return strategic_walk_towards(current_pos, candidate_positions, 
+                                            self.player.player_positions, self.player.map, 2)
         
-        if candidate_positions:
-            return strategic_walk_towards(current_pos, candidate_positions, 
-                                        self.player.player_positions, self.player.map, 2)
-        else:
-            return random_walk(current_pos, self.player.player_positions, self.player.map, 2)
+        return random_walk(current_pos, self.player.player_positions, self.player.map, 2)
 
 # 骑士策略
 class KnightStrategy(RoleStrategy):
@@ -740,22 +741,33 @@ class KnightStrategy(RoleStrategy):
     
     def mission_vote1(self) -> bool:
         """骑士投票：基于怀疑度判断"""
-        current_team = self.player.team_history[-1][1] if self.player.team_history else []
+        # 确保team_history存在且不为空
+        if not self.player.team_history:
+            return random.choice([True, False])
+        
+        # 确保current_team是列表或可迭代对象
+        current_team = self.player.team_history[-1]
+        if not isinstance(current_team, (list, tuple, set)):
+            return random.choice([True, False])
+        
         public_records = read_public_lib()
         self.player.cur_round = public_records[-1]["round"]
-        evil_count=0
+        evil_count = 0
+        
+        # 遍历current_team
         for p in current_team:
-            if p in self.player.trusted_evil and p!=self.player.index:
-                evil_count+=1
+            if p in self.player.trusted_evil and p != self.player.index:
+                evil_count += 1
+
         if self.player.cur_round not in [4]:
             if evil_count > 0:
                 return False  # 发现可疑玩家，投票否决
             else:
-                consider_dict={}
+                consider_dict = {}
                 for p in self.player.players:
                     if p != self.player.index:
-                        consider_dict[p]=self.player.kind_level[p]
-                consider_list = sorted(consider_dict.items(), key=lambda x:x[1], reverse=False)
+                        consider_dict[p] = self.player.kind_level[p]
+                consider_list = sorted(consider_dict.items(), key=lambda x: x[1], reverse=False)
                 if consider_list[0][0] in current_team:
                     return False
                 elif consider_list[1][0] in current_team:
@@ -768,19 +780,19 @@ class KnightStrategy(RoleStrategy):
             if evil_count > 1:
                 return False  # 发现可疑玩家，投票否决
             else:
-                consider_dict={}
+                consider_dict = {}
                 for p in self.player.players:
                     if p not in self.player.trusted_evil and p != self.player.index:
-                        consider_dict[p]=self.player.kind_level[p]
-                consider_list = sorted(consider_dict.items(), key=lambda x:x[1], reverse=False)
-                num=0
+                        consider_dict[p] = self.player.kind_level[p]
+                consider_list = sorted(consider_dict.items(), key=lambda x: x[1], reverse=False)
+                num = 0
                 if consider_list[0][0] in current_team:
-                    num+=1
+                    num += 1
                 elif consider_list[1][0] in current_team:
-                    num+=1
+                    num += 1
                 elif consider_list[2][0] in current_team:
-                    num+=1
-                if num>1:
+                    num += 1
+                if num > 1:
                     return False
                 else:
                     return True
@@ -807,7 +819,7 @@ class MorganaStrategy(RoleStrategy):
             candidates.append(random.choice(evil_allies))
         
         # 选择看似好人的玩家获取信任
-        sorted_by_suspicion = sorted(self.player.players, key=lambda p: self.player.suspicion_level[p])
+        sorted_by_suspicion = sorted(self.player.players, key=lambda p: -self.player.kind_level[p])
         for p in sorted_by_suspicion:
             if p not in candidates and len(candidates) < team_size:
                 candidates.append(p)
@@ -828,7 +840,7 @@ class MorganaStrategy(RoleStrategy):
     
     def mission_vote1(self) -> bool:
         """莫甘娜投票：支持有利于破坏的队伍"""
-        current_team = self.player.team_history[-1][1] if self.player.team_history else []
+        current_team = self.player.team_history[-1] if self.player.team_history else []
         evil_on_team = [p for p in current_team if p in self.player.trusted_evil or p == self.player.index]
         
         if self.player.index in current_team and len(evil_on_team) >= 1:
@@ -890,7 +902,7 @@ class AssassinStrategy(RoleStrategy):
     
     def mission_vote1(self) -> bool:
         """刺客投票：支持有利于破坏的队伍"""
-        current_team = self.player.team_history[-1][1] if self.player.team_history else []
+        current_team = self.player.team_history[-1] if self.player.team_history else []
         evil_on_team = [p for p in current_team if p in self.player.trusted_evil or p == self.player.index]
         
         if self.player.index in current_team and len(evil_on_team) >= 1:
@@ -921,8 +933,9 @@ class AssassinStrategy(RoleStrategy):
 - 已知邪恶玩家：{list(self.player.trusted_evil)}
 - 任务历史：{self.player.mission_results}
 - 玩家信任度：{dict(self.player.kind_level)}
+- 我的编号：{self.player.index}（不能刺杀自己）
 
-请分析以上信息，给出最可能是梅林的玩家编号（1-7），并简要说明理由。"""
+请分析以上信息，给出最可能是梅林的玩家编号（1-7，但不能是{self.player.index}），并简要说明理由。"""
             
             # 设置超时
             start_time = time.time()
@@ -934,7 +947,7 @@ class AssassinStrategy(RoleStrategy):
                 match = re.search(r"P?(\d+)", response)
                 if match:
                     target = int(match.group(1))
-                    if target in self.player.players and target not in self.player.trusted_evil:
+                    if target in self.player.players and target not in self.player.trusted_evil and target != self.player.index:
                         write_into_private(f"LLM分析结果：选择P{target}作为刺杀目标")
                         return target
         except Exception as e:
@@ -964,15 +977,15 @@ class AssassinStrategy(RoleStrategy):
         for p in self.player.players:
             if p == self.player.index or p in self.player.trusted_evil:
                 continue
-            candidate_scores[p] += (5 - self.player.suspicion_level[p])
+            candidate_scores[p] += (5 + self.player.kind_level[p])
         
         # 派西维尔的候选人优先级更高
         if 'Merlin_Morgana_candidates' in self.player.known_roles:
             for p in self.player.known_roles['Merlin_Morgana_candidates']:
-                if p not in self.player.trusted_evil:
+                if p not in self.player.trusted_evil and p != self.player.index:
                     candidate_scores[p] += 15
         
-        # 排除已知邪恶玩家
+        # 排除已知邪恶玩家和自己
         for evil in self.player.trusted_evil:
             candidate_scores.pop(evil, None)
         candidate_scores.pop(self.player.index, None)
@@ -985,9 +998,15 @@ class AssassinStrategy(RoleStrategy):
             write_into_private(f"备用策略：选择P{target}作为刺杀目标，得分：{candidate_scores[target]}")
             return target
         
-        # 备选方案：随机选择非邪恶玩家
+        # 备选方案：随机选择非邪恶玩家（排除自己）
         valid_targets = [p for p in self.player.players if p != self.player.index and p not in self.player.trusted_evil]
-        return random.choice(valid_targets) if valid_targets else 1
+        if valid_targets:
+            target = random.choice(valid_targets)
+            write_into_private(f"备选方案：随机选择P{target}作为刺杀目标")
+            return target
+        
+        # 最后的备选方案：如果没有有效目标，选择1号玩家（如果不是自己）
+        return 1 if self.player.index != 1 else 2
 
     def walk(self) -> tuple:
         """刺客移动策略：尝试靠近疑似梅林的玩家"""
@@ -1007,7 +1026,7 @@ class AssassinStrategy(RoleStrategy):
         if not merlin_suspects:
             merlin_suspects = [p for p in self.player.players 
                               if p != self.player.index and p not in self.player.trusted_evil 
-                              and self.player.suspicion_level[p] < 3]
+                              and self.player.kind_level[p] > 3]
         
         if merlin_suspects:
             suspect_positions = [self.player.player_positions.get(p) for p in merlin_suspects 
@@ -1110,7 +1129,7 @@ class Player:
         self.past_leader = {}
         self.strategy = None  # 角色策略对象
         self.leader_history = []  # 添加leader_history属性
-
+        
     def set_player_index(self, index: int):
         '''设置玩家索引'''
         self.index = index
@@ -1182,79 +1201,84 @@ class Player:
             self.kind_level[speaker] -= changes['speaker_suspicion']
 
     def pass_mission_members(self, leader: int, mission_members: list):
-        self.team_history.append(mission_members)
-        self.leader_history.append(leader)
-        
-        public_records = read_public_lib()
-
-        self.cur_round = public_records[-1]["round"]
-
-        idx = len(public_records) - 1
-        if self.cur_round >= 2:
-            while True:
-                if public_records[idx]["type"] == 'mission_execution' and public_records[idx]["round"] == self.cur_round - 1:
-                    if public_records[idx]['success']:
-                        last_round_result = True
-                    else:
-                        last_round_result = False
-                    self.mission_results[self.cur_round-1]=last_round_result
-                    fail_vote=public_records[idx]['fail_votes']
-                    self.mission_vote_history[self.cur_round-1] = fail_vote
-                    break
-                if idx < 0:
-                    break
-                idx -= 1
+        try:
+            self.team_history.append(mission_members)
+            self.leader_history.append(leader)
             
-        idx = len(public_records) - 1
-        last_round_team = []
-        if self.cur_round >= 2:
+            public_records = read_public_lib()
+
+            self.cur_round = public_records[-1]["round"]
+
+            idx = len(public_records) - 1
+            if self.cur_round >= 2:
+                while True:
+                    if public_records[idx]["type"] == 'mission_execution' and public_records[idx]["round"] == self.cur_round - 1:
+                        if public_records[idx]['success']:
+                            last_round_result = True
+                        else:
+                            last_round_result = False
+                        self.mission_results[self.cur_round-1]=last_round_result
+                        fail_vote=public_records[idx]['fail_votes']
+                        self.mission_vote_history[self.cur_round-1] = fail_vote
+                        break
+                    if idx < 0:
+                        break
+                    idx -= 1
+            
+            idx = len(public_records) - 1
+            last_round_team = []
+            if self.cur_round >= 2:
+                while True:
+                    if public_records[idx]["type"] == "team_proposed" and public_records[idx]["round"] == self.cur_round - 1:
+                        last_round_team.extend(public_records[idx]["members"])
+                        last_round_leader = public_records[idx]["leader"]
+                        self.past_team[self.cur_round-1] = last_round_team
+                        self.past_leader[self.cur_round-1] = last_round_leader
+                        break
+                    if idx < 0:
+                        break
+                    idx -= 1
+
+            idx = len(public_records) - 1       
+            if self.cur_round >= 2:
+                self.vote_history[self.cur_round-1]={}
+                while True:
+                    if public_records[idx]["type"] == "public_vote" and public_records[idx]["round"] == self.cur_round - 1:
+                        for p in self.players:
+                            self.vote_history[self.cur_round-1][p] = public_records[idx]["votes"][str(p)]
+                        break
+                    if idx < 0:
+                        break
+                    idx -= 1
+
+            idx = len(public_records) - 1
+            update=True
             while True:
-                if public_records[idx]["type"] == "team_proposed" and public_records[idx]["round"] == self.cur_round - 1:
-                    last_round_team.extend(public_records[idx]["members"])
-                    last_round_leader = public_records[idx]["leader"]
-                    self.past_team[self.cur_round-1] = last_round_team
-                    self.past_leader[self.cur_round-1] = last_round_leader
+                if public_records[idx]["type"] == 'team_rejected' and public_records[idx]["round"] == self.cur_round:
+                    update=False
                     break
                 if idx < 0:
                     break
                 idx -= 1
+            if update:
+                round_number = self.cur_round - 1
+                players = self.players
+                index = self.index
+                team_history = self.past_team
+                mission_results = self.mission_results
+                leader_history = self.past_leader
+                fail_vote_history = self.mission_vote_history
+                vote_history = self.vote_history
+                kind_level = self.kind_level
+                wise_level = self.wise_level
+                trusted_good = self.trusted_good
+                trusted_evil = self.trusted_evil
 
-        idx = len(public_records) - 1       
-        if self.cur_round >= 2:
-            self.vote_history[self.cur_round-1]={}
-            while True:
-                if public_records[idx]["type"] == "public_vote" and public_records[idx]["round"] == self.cur_round - 1:
-                    for p in self.players:
-                        self.vote_history[self.cur_round-1][p] = public_records[idx]["votes"][str(p)]
-                    break
-                if idx < 0:
-                    break
-                idx -= 1
-
-        idx = len(public_records) - 1
-        update=True
-        while True:
-            if public_records[idx]["type"] == 'team_rejected' and public_records[idx]["round"] == self.cur_round:
-                update=False
-                break
-            if idx < 0:
-                break
-            idx -= 1
-        if update:
-            round_number = self.cur_round - 1
-            players = self.players
-            index = self.index
-            team_history = self.past_team
-            mission_results = self.mission_results
-            leader_history = self.past_leader
-            fail_vote_history = self.mission_vote_history
-            vote_history = self.vote_history
-            kind_level = self.kind_level
-            wise_level = self.wise_level
-            trusted_good = self.trusted_good
-            trusted_evil = self.trusted_evil
-
-            self.kind_level, self.wise_level, self.trusted_good, self.trusted_evil=calculate_mission_performance_score(round_number, players, index,  team_history, mission_results, leader_history, fail_vote_history, vote_history, kind_level, wise_level, trusted_good, trusted_evil)
+                self.kind_level, self.wise_level, self.trusted_good, self.trusted_evil=calculate_mission_performance_score(round_number, players, index,  team_history, mission_results, leader_history, fail_vote_history, vote_history, kind_level, wise_level, trusted_good, trusted_evil)
+        except Exception as e:
+            write_into_private(f"Error in pass_mission_members: {str(e)}")
+        finally:
+            return None  # 确保无论如何都返回None
 
     # 委托给策略对象的方法
     def decide_mission_member(self, team_size: int) -> list:
@@ -1277,3 +1301,6 @@ class Player:
         if hasattr(self.strategy, 'assass'):
             return self.strategy.assass()
         return 1  # 默认返回
+    
+    
+    
